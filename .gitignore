@@ -1,4 +1,5 @@
 easy-rsa
 pki
-issued-certs
+signed-certs
+ca-certs
 set*
