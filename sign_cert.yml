@@ -1,0 +1,90 @@
+---
+- name: Generate a local cert, get a signing request, sign it on the CA, copy back and generate env vars file for ist.py
+  hosts: easyrsa
+  become_user: root
+  tasks:
+    - name: Clone EasyRSA repo
+      git:
+        repo: https://github.com/OpenVPN/easy-rsa.git
+        dest: "{{ playbook_dir }}/easy-rsa"
+      delegate_to: localhost 
+    - name: Check if EasyRSA has been initialized before
+      stat:
+        path: "{{ playbook_dir }}/pki"
+      delegate_to: localhost
+      register: easyrsa_pki
+    - name: Initialize EasyRSA
+      shell: "{{ playbook_dir }}/easy-rsa/easyrsa3/easyrsa init-pki"
+      delegate_to: localhost
+      when: easyrsa_pki.stat.exists == false
+    - name: Generate Signing Request
+      shell: "{{ playbook_dir }}/easy-rsa/easyrsa3/easyrsa gen-req {{ entity_name }} nopass"
+      delegate_to: localhost
+      environment:
+        EASYRSA_BATCH: 1
+    - name: Copy Signing Request to Easy RSA LXD
+      copy:
+        src: "{{ playbook_dir }}/pki/reqs/{{ entity_name }}.req"
+        dest: "/var/tmp"
+        owner: ubuntu
+        group: ubuntu
+        mode: 0600
+    - name: Check if Request has been imported before
+      stat:
+        path: "/var/lib/juju/agents/unit-easyrsa-0/charm/EasyRSA-3.0.1/pki/reqs/{{ entity_name }}.req"
+      become: yes
+      register: easyrsa_req
+    - name: Import Cert
+      command: "./easyrsa import-req /var/tmp/{{ entity_name }}.req {{ entity_name }}"
+      args:
+        chdir: /var/lib/juju/agents/unit-easyrsa-0/charm/EasyRSA-3.0.1
+      when: easyrsa_req.stat.exists == false
+      become: yes
+    - name: Check if Cert has been Signed before
+      stat:
+        path: "/var/lib/juju/agents/unit-easyrsa-0/charm/EasyRSA-3.0.1/pki/issued/{{ entity_name }}.crt"
+      become: yes
+      register: easyrsa_crt
+    - name: Sign Cert
+      command: "./easyrsa sign-req client {{ entity_name }}"
+      args:
+        chdir: /var/lib/juju/agents/unit-easyrsa-0/charm/EasyRSA-3.0.1
+      become: yes
+      environment:
+        EASYRSA_BATCH: 1
+      when: easyrsa_crt.stat.exists == false
+    - name: create a cert output directory if its not present (./issued-certs)
+      file:
+        path: "{{ playbook_dir }}/signed-certs"
+        state: directory
+      delegate_to: localhost
+    - name: Copy Cert to localhost        
+      fetch:
+        src: "/var/lib/juju/agents/unit-easyrsa-0/charm/EasyRSA-3.0.1/pki/issued/{{ entity_name }}.crt"
+        dest: "{{ playbook_dir }}/signed-certs/"
+        mode: 0600
+        flat: yes
+      become: yes
+    - name: create a CA output directory if its not present (./ca-certs)
+      file:
+        path: "{{ playbook_dir }}/ca-certs"
+        state: directory
+      delegate_to: localhost
+    - name: Copy CA cert to localhost
+      fetch:
+        src: "/var/lib/juju/agents/unit-easyrsa-0/charm/EasyRSA-3.0.1/pki/ca.crt"
+        dest: "{{ playbook_dir }}/ca-certs/{{ entity_name }}-ca.crt"
+        mode: 0600
+        flat: yes
+      become: yes
+    - name: Generate Introspect CLI env var file
+      template: 
+       src: ist_env.j2 
+       dest: "{{ playbook_dir }}/set_ist_env_{{ entity_name }}"
+      delegate_to: localhost
+    - name: Print Cert Locations
+      debug:
+        msg: 
+          - "CA cert = {{ playbook_dir }}/ca-certs/{{ entity_name }}-ca.crt"
+          - "Client cert = {{ playbook_dir }}/signed-certs/{{ entity_name }}.crt"
+          - "Client key = {{ playbook_dir }}/pki/private/{{ entity_name }}.key"
